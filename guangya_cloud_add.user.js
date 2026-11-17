@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         光鸭云盘 - 磁力链接云添加
 // @namespace    https://www.guangyapan.com/
-// @version      1.0.0
+// @version      1.1.0
 // @description  在任意网站鼠标悬停磁力链接时显示“云添加"悬浮菜单，解析磁力并一键添加到光鸭云盘云添加。
 // @author       you
 // @match        *://*/*
@@ -9,10 +9,12 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        GM_deleteValue
 // @grant        GM_registerMenuCommand
 // @grant        GM_setClipboard
 // @grant        GM_openInTab
 // @connect      api.guangyapan.com
+// @connect      account.guangyapan.com
 // ==/UserScript==
 
 (function () {
@@ -23,7 +25,7 @@
      * =========================================================================
      * 说明：
      *  1. Token 自动获取：访问光鸭云盘页面时自动嗅探登录凭证并保存；也可通过油猴菜单“设置 Token”手动输入。
-     *     Token 有过期时间，可通过油猴菜单"设置 Token"随时覆盖，无需改代码。
+     *     Access Token 失效时会使用 Refresh Token 自动刷新并重试请求。
      *  2. 默认保存目录初始为空，首次打开目录选择器时会自动查找"来自：云添加"文件夹，
      *     找到后持久化保存。保存目录也可通过弹窗内"添加到"行的目录选择器（文件树）手动选择。
      *     油猴菜单"重置保存目录"可清除已保存的目录。
@@ -33,9 +35,12 @@
      *     下级目录用文件夹的 fileId 作为 parentId 懒加载。
      * ========================================================================= */
     var API_BASE = 'https://api.guangyapan.com';
+    var ACCOUNT_BASE = 'https://account.guangyapan.com';
+    var REFRESH_URL = ACCOUNT_BASE + '/v1/auth/token';
     var RESOLVE_URL = API_BASE + '/cloudcollection/v1/resolve_res';
     var CREATE_URL = API_BASE + '/cloudcollection/v1/create_task';
     var FILE_LIST_URL = API_BASE + '/userres/v1/file/get_file_list';
+    var OAUTH_CLIENT_ID = 'aMe-8VSlkrbQXpUR';
 
     var GUANGYA_LOGO = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzAiIGhlaWdodD0iMzAiIHZpZXdCb3g9IjAgMCAzMCAzMCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4NCjxnIGNsaXAtcGF0aD0idXJsKCNjbGlwMF8yOTQwXzgwODYpIj4NCjxwYXRoIGQ9Ik0wIDYuNjc5NjlDMCAyLjk5MDYgMi45OTA2IDAgNi42Nzk2OSAwSDIzLjMyMDNDMjcuMDA5NCAwIDMwIDIuOTkwNiAzMCA2LjY3OTY5VjIzLjMyMDNDMzAgMjcuMDA5NCAyNy4wMDk0IDMwIDIzLjMyMDMgMzBINi42Nzk2OUMyLjk5MDYgMzAgMCAyNy4wMDk0IDAgMjMuMzIwM1Y2LjY3OTY5WiIgZmlsbD0iI0ZGNjgwMCIvPg0KPHBhdGggZD0iTTAgNi42Nzk2OUMwIDIuOTkwNiAyLjk5MDYgMCA2LjY3OTY5IDBIMjMuMzIwM0MyNy4wMDk0IDAgMzAgMi45OTA2IDMwIDYuNjc5NjlWMjMuMzIwM0MzMCAyNy4wMDk0IDI3LjAwOTQgMzAgMjMuMzIwMyAzMEg2LjY3OTY5QzIuOTkwNiAzMCAwIDI3LjAwOTQgMCAyMy4zMjAzVjYuNjc5NjlaIiBmaWxsPSJ1cmwoI3BhaW50MF9yYWRpYWxfMjk0MF84MDg2KSIgZmlsbC1vcGFjaXR5PSIwLjciLz4NCjxwYXRoIGQ9Ik0xNi4xMDc3IDExLjY3NjdDMTYuOTU4OCAxMS42NzY3IDE3LjY0ODcgMTIuMzY0NiAxNy42NDg3IDEzLjIxMzJDMTcuNjQ4NyAxNC4wNjE4IDE2Ljk1ODggMTQuNzQ5NyAxNi4xMDc3IDE0Ljc0OTdDMTUuMjU2NyAxNC43NDk3IDE0LjU2NjcgMTQuMDYxOCAxNC41NjY3IDEzLjIxMzJDMTQuNTY2NyAxMi4zNjQ2IDE1LjI1NjcgMTEuNjc2NyAxNi4xMDc3IDExLjY3NjdaIiBmaWxsPSJ3aGl0ZSIvPg0KPHBhdGggZmlsbC1ydWxlPSJldmVub2RkIiBjbGlwLXJ1bGU9ImV2ZW5vZGQiIGQ9Ik0xNS43MDk4IDYuMjA5OTZDMTkuNDUwNiA2LjIwOTk2IDIyLjY0OCA4LjUyOTQyIDIzLjkzNDQgMTEuODA0NkMyMy45ODA3IDExLjkyMjMgMjQuMDkzNSAxMi4wMDE4IDI0LjIyMDMgMTIuMDAxOEgyNi44MzM2QzI2Ljk0OTIgMTIuMDAxOCAyNy4wNDI5IDEyLjA5NTIgMjcuMDQyOSAxMi4yMTA0QzI3LjA0MjkgMTIuNDI1IDI3LjAxOTcgMTIuNTI1OCAyNi45NzU3IDEyLjcyNzJDMjYuOTczMSAxMi43MzkgMjYuOTcwNSAxMi43NTA5IDI2Ljk2NzcgMTIuNzYyN0MyNi45NjUgMTIuNzc0NSAyNi45NjIyIDEyLjc4NjIgMjYuOTU5MyAxMi43OThDMjYuOTUzNiAxMi44MjE0IDI2Ljk0NzYgMTIuODQ0OCAyNi45NDEyIDEyLjg2ODFDMjYuOTM0OSAxMi44OTEzIDI2LjkyODQgMTIuOTE0NSAyNi45MjE1IDEyLjkzNzVDMjYuOTA0MyAxMi45OTUgMjYuODg1NCAxMy4wNTE4IDI2Ljg2NDggMTMuMTA3OEMyNi44NjA3IDEzLjExOSAyNi44NTY2IDEzLjEzMDIgMjYuODUyMyAxMy4xNDEzQzI2Ljc5NzEgMTMuMjg2MSAyNi43MzA3IDEzLjQyNTQgMjYuNjU0MSAxMy41NTgxQzI2LjY0ODMgMTMuNTY4MyAyNi42NDIzIDEzLjU3ODUgMjYuNjM2MyAxMy41ODg2QzI2LjYxODMgMTMuNjE5IDI2LjU5OTggMTMuNjQ5IDI2LjU4MDcgMTMuNjc4N0MyNi41NjE2IDEzLjcwODQgMjYuNTQyIDEzLjczNzcgMjYuNTIxOSAxMy43NjY2QzI2LjUwMDMgMTMuNzk3NiAyNi40NzgxIDEzLjgyODEgMjYuNDU1NCAxMy44NTgyQzI2LjQzMTkgMTMuODg5NSAyNi40MDc3IDEzLjkyMDIgMjYuMzgyOSAxMy45NTA1QzI2LjM3NDEgMTMuOTYxMiAyNi4zNjUzIDEzLjk3MTggMjYuMzU2NCAxMy45ODI0QzI2LjMyNDIgMTQuMDIwNyAyNi4yOTEgMTQuMDU4MiAyNi4yNTY5IDE0LjA5NDdDMjYuMjI0OSAxNC4xMjkgMjYuMTkyMSAxNC4xNjI1IDI2LjE1ODUgMTQuMTk1MUMyNi4xMjk0IDE0LjIyMzUgMjYuMDk5NiAxNC4yNTEzIDI2LjA2OTMgMTQuMjc4NEMyNi4wMzM3IDE0LjMxMDMgMjUuOTk3MyAxNC4zNDEzIDI1Ljk2MDIgMTQuMzcxNUMyNS45MTU5IDE0LjQwNzUgMjUuODcwNSAxNC40NDIyIDI1LjgyNCAxNC40NzU2QzI1LjY4NSAxNC41NzU2IDI1LjUzNjggMTQuNjYzOSAyNS4zODEgMTQuNzM4OEMyNS4zNzAzIDE0Ljc0MzkgMjUuMzU5NiAxNC43NDkgMjUuMzQ4OCAxNC43NTRDMjUuMjc2NCAxNC43ODc3IDI1LjIwMjQgMTQuODE4NSAyNS4xMjY5IDE0Ljg0NjNDMjUuMDY1MiAxNC44NjkxIDI1LjAwMjYgMTQuODg5OCAyNC45MzkxIDE0LjkwODVDMjQuODk1NSAxNC45MjEzIDI0Ljg1MTUgMTQuOTMzMiAyNC44MDcgMTQuOTQ0QzI0Ljc1OTkgMTQuOTU1NCAyNC43MTI0IDE0Ljk2NTggMjQuNjY0NCAxNC45NzQ5QzI0LjYyMzEgMTQuOTgyOCAyNC41ODEzIDE0Ljk4OTggMjQuNTM5NCAxNC45OTZDMjQuNDgxOCAxNS4wMDQ0IDI0LjE5NTggMTUuMDEzNyAyNC4xMDc4IDE1LjAxMzdIMjEuMTc4M0wyMS4xNzg0IDE1LjAxNDVIMjEuNjMxOUMyMS4yMjk2IDE1LjAzMyAyMS4xNzQ3IDE1LjM3NzYgMjEuMTU1NiAxNS41NTM0TDIxLjE1NTUgMTUuNTUyMkMyMC44NzY0IDIwLjE2MzUgMTcuMDM3MyAyMy44MTc0IDEyLjM0MjIgMjMuODE3NEM3LjU2Njk0IDIzLjgxNzQgMy42NzcwMSAyMC4wMzc3IDMuNTE3NjUgMTUuMzE1MUMzLjUxMjA1IDE1LjE0OSAzLjY0NzY0IDE1LjAxMzcgMy44MTQyNCAxNS4wMTM3SDYuNDA3MjRDNi42OTg5OCAxNC45OTE5IDYuODUzMzggMTQuODc0MiA2Ljg5NzYgMTQuNDMyNlYxNC40NTcyQzcuMTg1NTcgOS44NTQzIDExLjAyMDggNi4yMDk5OCAxNS43MDk4IDYuMjA5OTZaTTE1LjcwOTggOS41NzkzMkMxMi44MDA5IDkuNTc5MzQgMTAuNDI0MyAxMS44NTE0IDEwLjI2NzcgMTQuNzEyOEMxMC4yNTg2IDE0Ljg3ODcgMTAuMTI0NCAxNS4wMTM3IDkuOTU3ODYgMTUuMDEzN0g3LjIwOTIzQzYuOTY4NzYgMTUuMDMxMSA2LjkxMTY3IDE1LjIxNjEgNi45MDE5MSAxNS4zNDY2QzcuMDc0NDUgMTguMTkyOSA5LjQ0NDE5IDIwLjQ0OCAxMi4zNDIyIDIwLjQ0OEMxNS4yNTExIDIwLjQ0OCAxNy42Mjc3IDE4LjE3NTkgMTcuNzg0MyAxNS4zMTQ1QzE3Ljc5MzQgMTUuMTQ4NiAxNy45Mjc2IDE1LjAxMzcgMTguMDk0MiAxNS4wMTM3SDIwLjc2ODhDMjEuMDY2OCAxNC45NTg1IDIxLjE0MTIgMTQuNzAyNiAyMS4xMzk0IDE0LjUzNThDMjAuODk2NyAxMS43NTgzIDE4LjU1ODUgOS41NzkzMyAxNS43MDk4IDkuNTc5MzJaIiBmaWxsPSJ3aGl0ZSIvPg0KPC9nPg0KPGRlZnM+DQo8cmFkaWFsR3JhZGllbnQgaWQ9InBhaW50MF9yYWRpYWxfMjk0MF84MDg2IiBjeD0iMCIgY3k9IjAiIHI9IjEiIGdyYWRpZW50VW5pdHM9InVzZXJTcGFjZU9uVXNlIiBncmFkaWVudFRyYW5zZm9ybT0idHJhbnNsYXRlKDI1LjE2NiAwLjU1NjY0KSByb3RhdGUoMTI3LjMxMikgc2NhbGUoMjIuNzY0MykiPg0KPHN0b3Agc3RvcC1jb2xvcj0iI0ZGQzMwRSIvPg0KPHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjRkZBNzBFIiBzdG9wLW9wYWNpdHk9IjAiLz4NCjwvcmFkaWFsR3JhZGllbnQ+DQo8Y2xpcFBhdGggaWQ9ImNsaXAwXzI5NDBfODA4NiI+DQo8cmVjdCB3aWR0aD0iMzAiIGhlaWdodD0iMzAiIGZpbGw9IndoaXRlIi8+DQo8L2NsaXBQYXRoPg0KPC9kZWZzPg0KPC9zdmc+DQo='
     // 默认保存目录：初始为空，首次加载目录时会查找"来自：云添加"文件夹并持久化
@@ -43,7 +48,11 @@
 
     // 自动获取光鸭 Token：与 guangya_quickly 共享存储键，任一脚本在光鸭页面嗅探到 Authorization 都会持久化供复用
     var GUANGYA_AUTH_STORAGE_KEY = '__GUANGYA_CLOUD_QUICKLY_AUTH__';
+    var GUANGYA_CREDENTIALS_PREFIX = 'credentials_' + OAUTH_CLIENT_ID;
+    var OAUTH_CREDENTIAL_STORAGE_KEY = 'gyp_oauth_credentials';
+    var REFRESH_TOKEN_STORAGE_KEY = 'gyp_refresh_token';
     var CAPTURE_EVENT = '__GYP_CLOUD_ADD_CAPTURE__';
+    var refreshPromise = null;
 
     function getToken() {
         // 1. 油猴菜单手动覆盖
@@ -54,6 +63,19 @@
         if (stored) return stored;
         // 3. 无可用 Token
         return '';
+    }
+    function getManualToken() {
+        try {
+            var value = GM_getValue('gyp_token', '');
+            return value && String(value).trim() ? normalizeAuth(value) : '';
+        } catch (e) {
+            return '';
+        }
+    }
+    function updateManualTokenIfPresent(auth) {
+        var manual = getManualToken();
+        if (!manual || !auth) return;
+        try { GM_setValue('gyp_token', normalizeAuth(auth)); } catch (e) {}
     }
     function getSelectedFolder() {
         var saved = GM_getValue('gyp_selected_folder', null);
@@ -73,10 +95,23 @@
         GM_setValue('gyp_token', '');
         alert('已清空手动设置的 Token');
     });
-    GM_registerMenuCommand('🧹 清除自动获取的 Token', function () {
+    GM_registerMenuCommand('🔑 设置 Refresh Token', function () {
+        var current = getRefreshToken();
+        var v = prompt('请输入光鸭云盘的 Refresh Token：', current);
+        if (v == null) return;
+        v = v.trim().replace(/^Bearer\s+/i, '');
+        if (!v) return;
+        var credential = getStoredCredential() || {};
+        credential.refresh_token = v;
+        credential.updated_at = Date.now();
+        setStoredCredential(credential);
+        alert('Refresh Token 已保存');
+    });
+    GM_registerMenuCommand('🧹 清除自动 Token 和 Refresh Token', function () {
         try { GM_setValue(GUANGYA_AUTH_STORAGE_KEY, ''); } catch (e) {}
         try { window.localStorage.removeItem(GUANGYA_AUTH_STORAGE_KEY); } catch (e) {}
-        alert('已清除自动获取的 Token，下次访问光鸭云盘时会重新嗅探');
+        clearStoredCredential();
+        alert('已清除自动获取的 Token 和 Refresh Token，下次访问光鸭云盘时会重新嗅探');
     });
     GM_registerMenuCommand('🔄 重置保存目录', function () {
         GM_deleteValue('gyp_selected_folder');
@@ -110,26 +145,55 @@
     }
 
     // 统一的 GM 请求，返回 { status, json, text }
+    // HTTP 401 时最多刷新一次，并使用新的 Access Token 重试原请求。
     function gmRequest(method, url, bodyObj) {
-        return new Promise(function (resolve, reject) {
-            GM_xmlhttpRequest({
-                method: method,
-                url: url,
-                timeout: 30000,
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': getToken()
-                },
-                data: bodyObj ? JSON.stringify(bodyObj) : undefined,
-                onload: function (r) {
-                    var json = null;
-                    try { json = JSON.parse(r.responseText); } catch (e) {}
-                    resolve({ status: r.status, json: json, text: r.responseText });
-                },
-                onerror: function () { reject(new Error('网络请求失败，请检查网络')); },
-                ontimeout: function () { reject(new Error('请求超时')); }
+        var data = bodyObj ? JSON.stringify(bodyObj) : undefined;
+
+        function send(auth) {
+            return new Promise(function (resolve, reject) {
+                GM_xmlhttpRequest({
+                    method: method,
+                    url: url,
+                    timeout: 30000,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': auth || ''
+                    },
+                    data: data,
+                    onload: function (r) {
+                        var json = null;
+                        try { json = JSON.parse(r.responseText); } catch (e) {}
+                        resolve({ status: r.status, json: json, text: r.responseText });
+                    },
+                    onerror: function () { reject(new Error('网络请求失败，请检查网络')); },
+                    ontimeout: function () { reject(new Error('请求超时')); }
+                });
             });
-        });
+        }
+
+        function executeWithToken(auth, canRefresh) {
+            return send(auth).then(function (r) {
+                if (r.status !== 401 || !canRefresh) return r;
+
+                // 其它并发请求可能已经完成刷新，此时直接使用最新 Token 重试。
+                var latestAuth = getToken();
+                if (latestAuth && auth && latestAuth !== auth) {
+                    return executeWithToken(latestAuth, false);
+                }
+                return refreshAccessToken().then(function (refreshedAuth) {
+                    return executeWithToken(refreshedAuth, false);
+                });
+            });
+        }
+
+        var initialAuth = getToken();
+        if (isAccessTokenExpired(initialAuth)) {
+            return refreshAccessToken().then(function (refreshedAuth) {
+                // 已在请求前刷新过，本次请求周期内不再二次刷新。
+                return executeWithToken(refreshedAuth, false);
+            });
+        }
+        return executeWithToken(initialAuth, true);
     }
 
     // 解析接口返回是否成功（兼容 msg=success / code=0 / HTTP 2xx）
@@ -141,7 +205,7 @@
             if (r.json.code != null && r.json.code !== 0) { ok = false; msg = msg || ('code=' + r.json.code); }
         }
         if (!ok && !msg) msg = r.text ? r.text.slice(0, 200) : ('HTTP ' + r.status);
-        if (r.status === 401) msg = (msg ? msg + '；' : '') + 'Token 可能已过期，请通过油猴菜单更新';
+        if (r.status === 401) msg = (msg ? msg + '；' : '') + 'Token 已失效，自动刷新失败或刷新后的 Token 仍无效，请重新登录光鸭云盘或手动更新 Token';
         return { ok: ok, msg: msg, json: r.json };
     }
 
@@ -185,10 +249,293 @@
         } catch (e) {}
     }
 
+    function authTokenValue(value) {
+        var auth = normalizeAuth(value);
+        return auth.replace(/^Bearer\s+/i, '');
+    }
+
+    function getAuthSubject(auth) {
+        try {
+            var parts = authTokenValue(auth).split('.');
+            if (parts.length < 2) return '';
+            var payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+            while (payload.length % 4) payload += '=';
+            var data = JSON.parse(atob(payload));
+            return String(data.sub || data.subject || data.user_id || '');
+        } catch (e) {
+            return '';
+        }
+    }
+
+    function parseJsonValue(value) {
+        if (typeof value !== 'string') return value;
+        try { return JSON.parse(value); } catch (e) { return value; }
+    }
+
+    function unwrapCredential(value) {
+        for (var i = 0; i < 4; i++) {
+            value = parseJsonValue(value);
+            if (!value || typeof value !== 'object') return null;
+            if (value.access_token || value.refresh_token) return value;
+            if (value.data != null) value = value.data;
+            else if (value.credentials != null) value = value.credentials;
+            else return null;
+        }
+        return null;
+    }
+
+    function normalizeCredential(raw, fallbackSub) {
+        var data = unwrapCredential(raw);
+        if (!data) return null;
+        var accessToken = String(data.access_token || data.accessToken || data.token || '').trim();
+        var refreshToken = String(data.refresh_token || data.refreshToken || '').trim();
+        if (!accessToken && !refreshToken) return null;
+        var expiresIn = Number(data.expires_in || data.expiresIn || 0);
+        var expiresAt = data.expires_at != null ? data.expires_at : data.expiresAt;
+        if (expiresAt != null) {
+            var numericExpiresAt = Number(expiresAt);
+            if (isFinite(numericExpiresAt)) {
+                expiresAt = numericExpiresAt < 1000000000000 ? numericExpiresAt * 1000 : numericExpiresAt;
+            } else {
+                var parsedExpiresAt = Date.parse(expiresAt);
+                expiresAt = isNaN(parsedExpiresAt) ? 0 : parsedExpiresAt;
+            }
+        }
+        if (!expiresAt && expiresIn > 0) expiresAt = Date.now() + expiresIn * 1000;
+        return {
+            access_token: accessToken,
+            refresh_token: refreshToken,
+            token_type: String(data.token_type || data.tokenType || 'Bearer').trim() || 'Bearer',
+            expires_in: expiresIn > 0 ? expiresIn : 0,
+            expires_at: expiresAt || 0,
+            sub: String(data.sub || data.subject || data.user_id || fallbackSub || ''),
+            updated_at: Date.now()
+        };
+    }
+
+    function credentialMatchesAuth(credential, auth) {
+        if (!credential || !credential.refresh_token || !auth) return false;
+        var currentToken = authTokenValue(auth);
+        var credentialToken = String(credential.access_token || '').trim();
+        if (!credentialToken) return true;
+        if (currentToken && currentToken === credentialToken) return true;
+        var currentSubject = getAuthSubject(auth);
+        var credentialSubject = String(credential.sub || '').trim();
+        return !!(currentSubject && credentialSubject && currentSubject === credentialSubject);
+    }
+
+    function getStoredCredential() {
+        try {
+            var stored = normalizeCredential(GM_getValue(OAUTH_CREDENTIAL_STORAGE_KEY, null));
+            if (stored && stored.refresh_token) return stored;
+        } catch (e) {}
+        try {
+            var refreshToken = GM_getValue(REFRESH_TOKEN_STORAGE_KEY, '');
+            if (refreshToken && String(refreshToken).trim()) {
+                return normalizeCredential({ refresh_token: String(refreshToken).trim() });
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    function getRefreshToken() {
+        var auth = getToken();
+        var credential = getStoredCredential();
+        if (credential && credential.refresh_token && (!auth || credentialMatchesAuth(credential, auth))) {
+            return credential.refresh_token;
+        }
+
+        // 手动更换过 Access Token 时，优先从页面存储中找与当前账号匹配的 Refresh Token。
+        credential = captureCredentialFromPage(auth);
+        if (credential && credential.refresh_token && (!auth || credentialMatchesAuth(credential, auth))) {
+            return credential.refresh_token;
+        }
+
+        // 没有 Access Token 时，已保存的 Refresh Token 仍可用于恢复登录。
+        if (!auth && credential && credential.refresh_token) return credential.refresh_token;
+        return '';
+    }
+
+    function isAccessTokenExpired(auth) {
+        if (!auth) return false;
+        var credential = getStoredCredential();
+        if (!credential || !credential.refresh_token || !credential.expires_at) return false;
+        // 只信任与当前 Access Token 完全对应的过期时间，避免账号匹配但 Token 已轮换时误判。
+        return String(credential.access_token || '') === authTokenValue(auth) &&
+            credential.expires_at <= Date.now();
+    }
+
+    function getRefreshErrorMessage(r) {
+        var data = r && r.json;
+        if (data && data.data && typeof data.data === 'object') data = data.data;
+        if (data && typeof data === 'object') {
+            var message = data.error_description || data.message || data.msg || data.error;
+            if (message) return String(message);
+            if (data.code != null) return 'code=' + data.code;
+        }
+        return r && r.text ? String(r.text).slice(0, 200) : ('HTTP ' + (r ? r.status : '?'));
+    }
+
+    function requestRefreshToken(refreshToken) {
+        return new Promise(function (resolve, reject) {
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url: REFRESH_URL,
+                timeout: 30000,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json, text/plain, */*',
+                    'X-Action': '401'
+                },
+                data: JSON.stringify({
+                    client_id: OAUTH_CLIENT_ID,
+                    grant_type: 'refresh_token',
+                    refresh_token: refreshToken
+                }),
+                onload: function (r) {
+                    var json = null;
+                    try { json = JSON.parse(r.responseText); } catch (e) {}
+                    resolve({ status: r.status, json: json, text: r.responseText });
+                },
+                onerror: function () { reject(new Error('刷新请求网络失败，请检查网络')); },
+                ontimeout: function () { reject(new Error('刷新请求超时')); }
+            });
+        });
+    }
+
+    // 所有并发 401 共享同一次刷新请求。
+    function refreshAccessToken() {
+        if (refreshPromise) return refreshPromise;
+
+        var refreshToken = getRefreshToken();
+        if (!refreshToken) {
+            return Promise.reject(new Error('Token 已失效，且未找到 Refresh Token，请重新登录光鸭云盘或手动设置 Token'));
+        }
+
+        var previous = getStoredCredential() || {};
+        var promise = requestRefreshToken(refreshToken).then(function (r) {
+            var credential = normalizeCredential(r.json);
+            if (r.status < 200 || r.status >= 300 || !credential || !credential.access_token) {
+                throw new Error('Token 刷新失败：' + getRefreshErrorMessage(r));
+            }
+
+            // Go 客户端在刷新响应未返回新 Refresh Token 时保留原值。
+            if (!credential.refresh_token) credential.refresh_token = refreshToken;
+            if (!credential.sub && previous.sub) credential.sub = previous.sub;
+            setStoredCredential(credential);
+            return normalizeAuth(credential.access_token);
+        });
+
+        refreshPromise = promise.then(function (auth) {
+            refreshPromise = null;
+            return auth;
+        }, function (err) {
+            refreshPromise = null;
+            throw err;
+        });
+        return refreshPromise;
+    }
+
+    function clearStoredCredential() {
+        try { GM_setValue(OAUTH_CREDENTIAL_STORAGE_KEY, ''); } catch (e) {}
+        try { GM_setValue(REFRESH_TOKEN_STORAGE_KEY, ''); } catch (e) {}
+    }
+
+    function readLocalCredential(preferredAuth) {
+        if (!isGuangyaPageHost()) return null;
+        var preferredToken = authTokenValue(preferredAuth);
+        var currentSub = '';
+        var best = null;
+        var bestScore = -1;
+        var bestExpiresAt = -1;
+        try { currentSub = String(window.localStorage.getItem('current_sub') || ''); } catch (e) {}
+        try {
+            for (var i = 0; i < window.localStorage.length; i++) {
+                var key = window.localStorage.key(i) || '';
+                if (key.indexOf(GUANGYA_CREDENTIALS_PREFIX) !== 0) continue;
+                var suffix = key.slice(GUANGYA_CREDENTIALS_PREFIX.length);
+                var fallbackSub = suffix.charAt(0) === '@' ? suffix.slice(1) : currentSub;
+                var credential = normalizeCredential(window.localStorage.getItem(key), fallbackSub);
+                if (!credential || !credential.refresh_token) continue;
+                var score = 0;
+                if (preferredToken && credential.access_token === preferredToken) score += 1000000;
+                if (currentSub && credential.sub === currentSub) score += 10000;
+                if (credential.expires_at) score += 1;
+                if (score > bestScore || (score === bestScore && credential.expires_at > bestExpiresAt)) {
+                    best = credential;
+                    bestScore = score;
+                    bestExpiresAt = credential.expires_at || 0;
+                }
+            }
+        } catch (e) {}
+        return best;
+    }
+
+    function writeCredentialToLocalStorage(credential) {
+        if (!isGuangyaPageHost() || !credential) return;
+        var selectedKey = '';
+        var selectedScore = -1;
+        var selectedExpiresAt = -1;
+        try {
+            for (var i = 0; i < window.localStorage.length; i++) {
+                var key = window.localStorage.key(i) || '';
+                if (key.indexOf(GUANGYA_CREDENTIALS_PREFIX) !== 0) continue;
+                var suffix = key.slice(GUANGYA_CREDENTIALS_PREFIX.length);
+                var fallbackSub = suffix.charAt(0) === '@' ? suffix.slice(1) : '';
+                var current = normalizeCredential(window.localStorage.getItem(key), fallbackSub);
+                if (!current) continue;
+                var score = 0;
+                if (credential.sub && current.sub === credential.sub) score += 10000;
+                if (credential.access_token && current.access_token === credential.access_token) score += 1000000;
+                if (score > selectedScore || (score === selectedScore && current.expires_at > selectedExpiresAt)) {
+                    selectedKey = key;
+                    selectedScore = score;
+                    selectedExpiresAt = current.expires_at || 0;
+                }
+            }
+            if (!selectedKey) return;
+            var parsed = parseJsonValue(window.localStorage.getItem(selectedKey));
+            var target = unwrapCredential(parsed);
+            if (!target) return;
+            if (credential.access_token) target.access_token = credential.access_token;
+            if (credential.refresh_token) target.refresh_token = credential.refresh_token;
+            if (credential.token_type) target.token_type = credential.token_type;
+            if (credential.expires_in) target.expires_in = credential.expires_in;
+            if (credential.expires_at) target.expires_at = credential.expires_at;
+            if (credential.sub) target.sub = credential.sub;
+            window.localStorage.setItem(selectedKey, JSON.stringify(parsed && typeof parsed === 'object' ? parsed : target));
+        } catch (e) {}
+    }
+
+    function setStoredCredential(raw) {
+        var credential = normalizeCredential(raw);
+        if (!credential) return null;
+        try { GM_setValue(OAUTH_CREDENTIAL_STORAGE_KEY, credential); } catch (e) {}
+        if (credential.refresh_token) {
+            try { GM_setValue(REFRESH_TOKEN_STORAGE_KEY, credential.refresh_token); } catch (e) {}
+        }
+        if (credential.access_token) {
+            var auth = normalizeAuth(credential.access_token);
+            setStoredAuth(auth);
+            updateManualTokenIfPresent(auth);
+        }
+        writeCredentialToLocalStorage(credential);
+        return credential;
+    }
+
+    function captureCredentialFromPage(preferredAuth) {
+        var credential = readLocalCredential(preferredAuth);
+        if (!credential) return null;
+        // 有当前 Token 时不要用其它账号的页面凭证覆盖。
+        if (preferredAuth && !credentialMatchesAuth(credential, preferredAuth)) return null;
+        return setStoredCredential(credential);
+    }
+
     // 仅在光鸭页面落盘，避免在其它站点误存
     function rememberAuth(auth) {
         if (!isGuangyaPageHost() || !auth) return;
         setStoredAuth(auth);
+        captureCredentialFromPage(auth);
     }
 
     // 注入到页面上下文的 hook 源码：patch fetch/XHR，捕获光鸭请求的 Authorization
